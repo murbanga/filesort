@@ -1,3 +1,5 @@
+// file sorting utility
+// implemented using merge-sort
 #include <stdio.h>
 #include <stdint.h>
 #include <assert.h>
@@ -26,30 +28,38 @@ size_t check_sorted(FILE *f)
 	return -1;
 }
 
+// sorts each chunk of size chunk_size from file and saves them into tmp file
 template <typename T>
-void partial_sort(FILE *f, FILE *tmp, size_t chunk_size, size_t chunks, int nthreads)
+void partial_sort(FILE *f, FILE *tmp, size_t chunk_size, size_t nthreads)
 {
-	vector < vector < T >> buf(nthreads);
-	printf("sorting %d chunks\n", chunks);
-	for (size_t i = 0; i < chunks; i += nthreads){
-		thread last;
-		for (int j = 0; j < nthreads && j + i < chunks; ++j){
-			buf[j].resize(chunk_size);
-			fseek(f, (i + j)*chunk_size*sizeof(T), SEEK_SET);
-			size_t read = fread(buf[j].data(), sizeof(T), chunk_size, f);
+	T *buf = new T[nthreads*chunk_size];
+	size_t read = 0;
 
-			thread t([&tmp](vector<T> &buf, int size, thread &prev)
+	fseek(f, 0, SEEK_SET);
+	do{
+		thread last;
+		read = fread(buf, sizeof(T), nthreads*chunk_size, f);
+		if (read == 0)break;
+
+		size_t n = min(nthreads, (read + chunk_size - 1) / chunk_size);
+		
+		for (size_t i = 0; i < n; ++i){
+
+			thread t([&tmp](T *buf, int size, thread &prev)
 			{
-				sort(buf.begin(), buf.begin() + size);
+				sort(buf, buf + size);
 
 				// wait until previous thread writes down it's data
 				if (prev.joinable())prev.join();
-				fwrite(buf.data(), sizeof(T), size, tmp);
-			}, buf[j], read, move(last));
+
+				fwrite(buf, sizeof(T), size, tmp);
+			}, buf + i*chunk_size, min(chunk_size, read - i*chunk_size), move(last));
 			last = move(t);
 		}
-		last.join();
-	}
+		if (last.joinable())last.join();
+	} while (read > 0);
+
+	delete[] buf;
 }
 
 // this merge() differs from STL one, it allows to mergin into destination buffer of smaller size
@@ -69,7 +79,7 @@ void merge(readIt &begin0, readIt end0, readIt &begin1, readIt end1, writeIt &be
 }
 
 template<typename T>
-void shift(T *write, const T *begin, const T *end)
+void overlapped_copy(T *write, const T *begin, const T *end)
 {
 	if (write == begin)return;
 
@@ -79,17 +89,16 @@ void shift(T *write, const T *begin, const T *end)
 template <typename T>
 void partial_merge(FILE *in, FILE *out, size_t chunk_size, size_t file_size, size_t merge_size)
 {
+	assert(chunk_size < file_size);
+	assert(merge_size <= chunk_size);
+
 	T *mergebuf = new T[merge_size];
 	T *partbuf0 = new T[merge_size];
 	T *partbuf1 = new T[merge_size];
 
-	size_t total_written = 0;
-
-	assert(chunk_size < file_size);
-	assert(merge_size <= chunk_size);
-
 	fseek(out, 0, SEEK_SET);
 
+	// this loop can be parallelized
 	for (size_t i = 0; i < file_size; i += 2 * chunk_size){
 		// offset in chunk
 		size_t offset0 = 0;
@@ -125,10 +134,9 @@ void partial_merge(FILE *in, FILE *out, size_t chunk_size, size_t file_size, siz
 			merge(start0, start0 + bufsize0, start1, start1 + bufsize1, start, mergebuf + merge_size);
 			
 			fwrite(mergebuf, sizeof(T), start - mergebuf, out);
-			total_written += start - mergebuf;
 
-			shift(partbuf0, start0, partbuf0 + bufsize0);
-			shift(partbuf1, start1, partbuf1 + bufsize1);
+			overlapped_copy(partbuf0, start0, partbuf0 + bufsize0);
+			overlapped_copy(partbuf1, start1, partbuf1 + bufsize1);
 
 			bufsize0 -= size_t(start0 - partbuf0);
 			bufsize1 -= size_t(start1 - partbuf1);
@@ -137,8 +145,6 @@ void partial_merge(FILE *in, FILE *out, size_t chunk_size, size_t file_size, siz
 			size1 = min(merge_size - bufsize1, chunk_size - offset1);
 		} while (bufsize0 + bufsize1 > 0);
 	}
-
-//	assert(total_written == file_size);
 
 	delete[] mergebuf;
 	delete[] partbuf0;
@@ -149,9 +155,9 @@ int main(int argc, char **argv)
 {
 	string filename;
 	string output;
-	size_t chunk_size = 0;
+	size_t chunk_size = 16386;
 	bool verify = false;
-	int nthreads = 4;
+	size_t nthreads = thread::hardware_concurrency();
 
 	for (int i = 1; i < argc; ++i){
 		if (string(argv[i]) == "-i")filename = argv[++i];
@@ -159,6 +165,15 @@ int main(int argc, char **argv)
 		else if (string(argv[i]) == "-c")chunk_size = (atoi(argv[++i]) << 10) / sizeof(uint32_t);
 		else if (string(argv[i]) == "-v")verify = true;
 		else if (string(argv[i]) == "-t")nthreads = atoi(argv[++i]);
+		else if (string(argv[i]) == "-a")printf("artec!\n");
+	}
+
+	if (filename.length() == 0 || output.length() == 0){
+		printf("usage: filesort -i <filename> -o <filename> [-c #] [-v] [-t #]\n"
+			"-c # initial sorting chunk size in kilobytes (default 64k)\n"
+			"-t # number of threads to use (default is cpu count)\n"
+			"-v verify output file\n");
+		return 1;
 	}
 
 	FILE *f = fopen(filename.c_str(), "rb+");
@@ -181,27 +196,27 @@ int main(int argc, char **argv)
 
 	fseek(f, 0, SEEK_END);
 	size_t filesize = ftell(f) / sizeof(uint32_t);
-	size_t n = (filesize + chunk_size - 1) / chunk_size;
 
-	partial_sort<uint32_t>(f, tmp, chunk_size, n, nthreads);
-
-	// merge stage
 	size_t total_written = 0;
-	size_t merge_part = chunk_size;
-
-	printf("merging by %u elemets at a time\n", merge_part);
-
 	size_t merge_chunk = chunk_size;
+	// evaluate how much merge steps required;
+	// more specificaly, would there be even or odd count of steps
+	// to decide what buffer to use first.
+	int idx = int(log2(filesize / merge_chunk)) % 2;
 	FILE *interim[2] = { tmp, out };
-	int idx = 0;
+
+	partial_sort<uint32_t>(f, interim[idx], chunk_size, nthreads);
+
+	//printf("merging by %u elements at a time\n", merge_part);
 
 	do{
-		printf("merging chunks of %u\n", merge_chunk);
-		partial_merge<uint32_t>(interim[idx], interim[idx ^ 1], merge_chunk, filesize, merge_part);
+		//printf("merging chunks of %u\n", merge_chunk);
+		partial_merge<uint32_t>(interim[idx], interim[idx ^ 1], merge_chunk, filesize, chunk_size);
 		merge_chunk += merge_chunk;
 		idx ^= 1;
 	} while (merge_chunk < filesize);
-	// this means last merge has been done into output file
+
+	// this assert checks that last merge has been done into output file
 	assert(idx == 1);
 	
 	fclose(out);
