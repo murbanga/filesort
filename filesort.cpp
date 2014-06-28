@@ -52,6 +52,99 @@ void partial_sort(FILE *f, FILE *tmp, size_t chunk_size, size_t chunks, int nthr
 	}
 }
 
+// this merge() differs from STL one, it allows to mergin into destination buffer of smaller size
+template<typename readIt, typename writeIt>
+void merge(readIt &begin0, readIt end0, readIt &begin1, readIt end1, writeIt &begin, writeIt end)
+{
+	while (begin != end && begin0 != end0 && begin1 != end1){
+		while (begin != end && begin0 != end0 && *begin0 <  *begin1)
+			*begin++ = *begin0++;
+		while (begin != end && begin1 != end1 && *begin0 >= *begin1)
+			*begin++ = *begin1++;
+	}
+	while (begin != end && begin0 != end0)
+		*begin++ = *begin0++;
+	while (begin != end && begin1 != end1)
+		*begin++ = *begin1++;
+}
+
+template<typename T>
+void shift(T *write, const T *begin, const T *end)
+{
+	if (write == begin)return;
+
+	while (begin != end)*write++ = *begin++;
+}
+
+template <typename T>
+void partial_merge(FILE *in, FILE *out, size_t chunk_size, size_t file_size, size_t merge_size)
+{
+	T *mergebuf = new T[merge_size];
+	T *partbuf0 = new T[merge_size];
+	T *partbuf1 = new T[merge_size];
+
+	size_t total_written = 0;
+
+	assert(chunk_size < file_size);
+	assert(merge_size <= chunk_size);
+
+	fseek(out, 0, SEEK_SET);
+
+	for (size_t i = 0; i < file_size; i += 2 * chunk_size){
+		// offset in chunk
+		size_t offset0 = 0;
+		size_t offset1 = 0;
+
+		// size of data stored in partbufs
+		size_t bufsize0 = 0;
+		size_t bufsize1 = 0;
+
+		// size of data to read from file
+		size_t size0 = min(merge_size, file_size - i);
+		size_t size1 = min(merge_size, file_size - i - chunk_size);
+
+		do{
+			if (size0 > 0){
+				fseek(in, (i + offset0)*sizeof(T), SEEK_SET);
+				size_t read = fread(partbuf0 + bufsize0, sizeof(T), size0, in);
+				bufsize0 += read;
+				offset0 += read;
+			}
+			
+			if (size1 > 0){
+				fseek(in, (i + chunk_size + offset1)*sizeof(T), SEEK_SET);
+				size_t read = fread(partbuf1 + bufsize1, sizeof(T), size1, in);
+				bufsize1 += read;
+				offset1 += read;
+			}
+
+			const T *start0 = partbuf0;
+			const T *start1 = partbuf1;
+			T *start = mergebuf;
+
+			merge(start0, start0 + bufsize0, start1, start1 + bufsize1, start, mergebuf + merge_size);
+			
+			fwrite(mergebuf, sizeof(T), start - mergebuf, out);
+			total_written += start - mergebuf;
+
+			shift(partbuf0, start0, partbuf0 + bufsize0);
+			shift(partbuf1, start1, partbuf1 + bufsize1);
+
+			bufsize0 -= size_t(start0 - partbuf0);
+			bufsize1 -= size_t(start1 - partbuf1);
+
+			size0 = min(merge_size - bufsize0, chunk_size - offset0);
+			size1 = min(merge_size - bufsize1, chunk_size - offset1);
+		} while (bufsize0 + bufsize1 > 0);
+	}
+
+//	assert(total_written == file_size);
+
+	delete[] mergebuf;
+	delete[] partbuf0;
+	delete[] partbuf1;
+}
+
 int main(int argc, char **argv)
 {
 	string filename;
@@ -63,7 +156,7 @@ int main(int argc, char **argv)
 	for (int i = 1; i < argc; ++i){
 		if (string(argv[i]) == "-i")filename = argv[++i];
 		if (string(argv[i]) == "-o")output = argv[++i];
-		else if (string(argv[i]) == "-c")chunk_size = (atoi(argv[++i]) << 20) / sizeof(uint32_t);
+		else if (string(argv[i]) == "-c")chunk_size = (atoi(argv[++i]) << 10) / sizeof(uint32_t);
 		else if (string(argv[i]) == "-v")verify = true;
 		else if (string(argv[i]) == "-t")nthreads = atoi(argv[++i]);
 	}
@@ -80,12 +173,11 @@ int main(int argc, char **argv)
 		return -2;
 	}
 
-	FILE *out = fopen(output.c_str(), "wb");
+	FILE *out = fopen(output.c_str(), "wb+");
 	if (!out){
 		printf("fail to open file %s\n", output.c_str());
 		return -1;
 	}
-
 
 	fseek(f, 0, SEEK_END);
 	size_t filesize = ftell(f) / sizeof(uint32_t);
@@ -95,39 +187,23 @@ int main(int argc, char **argv)
 
 	// merge stage
 	size_t total_written = 0;
-	size_t merge_part = chunk_size / n;
+	size_t merge_part = chunk_size;
 
-	printf("merging by %d chunks at a time\n", merge_part);
+	printf("merging by %u elemets at a time\n", merge_part);
 
-	vector<uint32_t> mergedbuf[2];
-	vector<uint32_t> part(merge_part);
+	size_t merge_chunk = chunk_size;
+	FILE *interim[2] = { tmp, out };
+	int idx = 0;
 
-	mergedbuf[0].resize(chunk_size);
-	mergedbuf[1].resize(chunk_size);
-
-	for (size_t j = 0; j < chunk_size; j += merge_part){
-		size_t merged_size = 0;
-		int idx = 0;
-		size_t read_size = min(merge_part, chunk_size - j);
-
-		for (size_t i = 0; i < n; ++i, idx ^= 1){
-			int64_t seek_pos = i*chunk_size + j;
-			if (seek_pos >= filesize)break;
-
-			read_size = min(read_size, size_t(filesize - seek_pos));
-			
-			_fseeki64(tmp, (i*chunk_size + j)*sizeof(uint32_t), SEEK_SET);
-			size_t read = fread(part.data(), sizeof(uint32_t), read_size, tmp);
-			
-			merge(part.begin(), part.begin() + read,
-				mergedbuf[idx].begin(), mergedbuf[idx].begin() + merged_size, mergedbuf[idx ^ 1].begin());
-			merged_size += read;
-		}
-		fwrite(mergedbuf[idx].data(), sizeof(uint32_t), merged_size, out);
-		total_written += merged_size;
-	}
-	assert(total_written == filesize);
-
+	do{
+		printf("merging chunks of %u\n", merge_chunk);
+		partial_merge<uint32_t>(interim[idx], interim[idx ^ 1], merge_chunk, filesize, merge_part);
+		merge_chunk += merge_chunk;
+		idx ^= 1;
+	} while (merge_chunk < filesize);
+	// this means last merge has been done into output file
+	assert(idx == 1);
+	
 	fclose(out);
 	fclose(tmp);
 	fclose(f);
@@ -136,7 +212,7 @@ int main(int argc, char **argv)
 		FILE *f = fopen(output.c_str(), "rb");
 		size_t i = check_sorted<uint32_t>(f);
 		fclose(f);
-		if (i < 0){
+		if (i == UINT32_MAX){
 			printf("pass\n");
 		}
 		else{
