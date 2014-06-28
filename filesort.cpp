@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdint.h>
+#include <assert.h>
 #include <vector>
 #include <string>
 #include <algorithm>
@@ -8,16 +9,17 @@
 using namespace std;
 
 template <typename T>
-int64_t check_sorted(FILE *f)
+size_t check_sorted(FILE *f)
 {
 	fseek(f, 0, SEEK_SET);
 	T prev = 0;
-	int64_t i = 0;
+	size_t i = 0;
 
 	while (!feof(f)){
 		T v;
 		size_t read = fread(&v, sizeof(v), 1, f);
-		if (v < prev)return i;
+		if (v < prev)
+			return i;
 		prev = v;
 		i++;
 	}
@@ -28,7 +30,6 @@ template <typename T>
 void partial_sort(FILE *f, FILE *tmp, size_t chunk_size, size_t chunks, int nthreads)
 {
 	vector < vector < T >> buf(nthreads);
-	// sort stage
 	printf("sorting %d chunks\n", chunks);
 	for (size_t i = 0; i < chunks; i += nthreads){
 		thread last;
@@ -41,6 +42,7 @@ void partial_sort(FILE *f, FILE *tmp, size_t chunk_size, size_t chunks, int nthr
 			{
 				sort(buf.begin(), buf.begin() + size);
 
+				// wait until previous thread writes down it's data
 				if (prev.joinable())prev.join();
 				fwrite(buf.data(), sizeof(T), size, tmp);
 			}, buf[j], read, move(last));
@@ -86,12 +88,13 @@ int main(int argc, char **argv)
 
 
 	fseek(f, 0, SEEK_END);
-	size_t filesize = ftell(f);
+	size_t filesize = ftell(f) / sizeof(uint32_t);
 	size_t n = (filesize + chunk_size - 1) / chunk_size;
 
 	partial_sort<uint32_t>(f, tmp, chunk_size, n, nthreads);
 
 	// merge stage
+	size_t total_written = 0;
 	size_t merge_part = chunk_size / n;
 
 	printf("merging by %d chunks at a time\n", merge_part);
@@ -107,7 +110,7 @@ int main(int argc, char **argv)
 		int idx = 0;
 		size_t read_size = min(merge_part, chunk_size - j);
 
-		for (size_t i = 0; i < n; ++i){
+		for (size_t i = 0; i < n; ++i, idx ^= 1){
 			int64_t seek_pos = i*chunk_size + j;
 			if (seek_pos >= filesize)break;
 
@@ -121,7 +124,9 @@ int main(int argc, char **argv)
 			merged_size += read;
 		}
 		fwrite(mergedbuf[idx].data(), sizeof(uint32_t), merged_size, out);
+		total_written += merged_size;
 	}
+	assert(total_written == filesize);
 
 	fclose(out);
 	fclose(tmp);
@@ -129,13 +134,13 @@ int main(int argc, char **argv)
 
 	if (verify){
 		FILE *f = fopen(output.c_str(), "rb");
-		int64_t i = check_sorted<uint32_t>(f);
+		size_t i = check_sorted<uint32_t>(f);
 		fclose(f);
 		if (i < 0){
 			printf("pass\n");
 		}
 		else{
-			printf("check failed at %i64d element\n", i);
+			printf("check failed at %u element\n", i);
 		}
 	}
 
