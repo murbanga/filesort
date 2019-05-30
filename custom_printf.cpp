@@ -3,17 +3,16 @@
 
 using namespace std;
 
-template <char a, char ...Chars> class FormatContents;
+template <char a, char ...Chars> class FormatSpecifier;
 
 template <char a, char ...Chars>
 class Formatter : public Formatter<Chars...>
 {
 public:
     template <class ...Types>
-    static string text(Types ...vals)
+    string text(Types ...vals)
     {
-        string s = Formatter<Chars...>::text(vals...);
-        return string({ a }) + s; 
+        return string({ a }) + Formatter<Chars...>::text(vals...);
     }
 };
 
@@ -21,113 +20,185 @@ template <char ...Chars>
 class Formatter<'\0', Chars...>
 {
 public:
-    static string text()
+    string text()
     {
         return "";
     }
 };
 
 template <char ...Chars>
-class Formatter<'%', Chars...> :public FormatContents<Chars...>
+class Formatter<'%', '%', Chars...> :public Formatter<Chars...>
 {
 public:
-    template <class T, class ...Types>
-    static string text(T val, Types ...vals)
+    template <class ...Types>
+    string text(Types ...vals)
     {
-        string s = FormatContents<Chars...>::text(vals...);
-        return FormatContents<Chars...>::formatted("%", val) + s;
+        return "%" + Formatter<Chars...>::text(vals...);
     }
 };
 
-#define FORMAT_CONTENTS(sym)    \
-    template <char ...Chars>  class FormatContents<sym, Chars...> :public FormatContents<Chars...>   \
+template <char ...Chars>
+class Formatter<'%', Chars...> :public FormatSpecifier<Chars...>
+{
+public:
+    template <class T, class ...Types>
+    string text(T val, Types ...vals)
+    {
+        return FormatSpecifier<Chars...>::formatted("%", val) + FormatSpecifier<Chars...>::text(vals...);
+    }
+};
+
+template <char ...Chars> class FormatSpecifier<'s', Chars...> :public Formatter<Chars...>
+{
+public:
+    string formatted(const string &format, const string &value)
+    {
+        char buf[256];
+        snprintf(buf, sizeof(buf), (format + 's').c_str(), value.c_str());
+        return buf;
+    }
+};
+
+template <char ...Chars> class FormatSpecifier<'l', 's', Chars...> :public Formatter<Chars...>
+{
+public:
+    string formatted(const string &format, const wstring &value)
+    {
+        char buf[256];
+        snprintf(buf, sizeof(buf), (format + "ls").c_str(), value.c_str());
+        return buf;
+    }
+};
+
+#define FORMAT_SPECIFIER(sym)    \
+    template <char ...Chars>  class FormatSpecifier<sym, Chars...> :public FormatSpecifier<Chars...>   \
     {\
     public:\
         template <class T>\
-        static string formatted(const string &format, T value) { return FormatContents<Chars...>::formatted(format + sym, value); }\
+        string formatted(const string &format, T value) { return FormatSpecifier<Chars...>::formatted(format + sym, value); }\
     };
 
-FORMAT_CONTENTS('-');
-FORMAT_CONTENTS('+');
-FORMAT_CONTENTS(' ');
-FORMAT_CONTENTS('.');
-FORMAT_CONTENTS('1');
-FORMAT_CONTENTS('2');
-FORMAT_CONTENTS('3');
-FORMAT_CONTENTS('4');
-FORMAT_CONTENTS('5');
-FORMAT_CONTENTS('6');
-FORMAT_CONTENTS('7');
-FORMAT_CONTENTS('8');
-FORMAT_CONTENTS('9');
+FORMAT_SPECIFIER('-');
+FORMAT_SPECIFIER('+');
+FORMAT_SPECIFIER(' ');
+FORMAT_SPECIFIER('.');
+FORMAT_SPECIFIER('0');
+FORMAT_SPECIFIER('1');
+FORMAT_SPECIFIER('2');
+FORMAT_SPECIFIER('3');
+FORMAT_SPECIFIER('4');
+FORMAT_SPECIFIER('5');
+FORMAT_SPECIFIER('6');
+FORMAT_SPECIFIER('7');
+FORMAT_SPECIFIER('8');
+FORMAT_SPECIFIER('9');
 
 template <class T>
 string _format(const string &format, T value)
 {
     char buf[256];
-    _snprintf(buf, sizeof(buf), format.c_str(), value);
+    snprintf(buf, sizeof(buf), format.c_str(), value);
     return buf;
 }
 
-#define TERMINAL_FORMATTER(sym, type)   \
-template <char ...Chars> class FormatContents<sym, Chars...> :public Formatter<Chars...>\
+#define FORMAT_TERMINATOR(sym, type)   \
+template <char ...Chars> class FormatSpecifier<sym, Chars...> :public Formatter<Chars...>\
 {\
 public:\
-    static string formatted(const string &format, type value){ return _format<type>(format + sym, value);   }\
+    string formatted(const string &format, type value){ return _format<type>(format + sym, value);   }\
 };
 
-#define TERMINAL_FORMATTER2(sym, type1, type2)   \
-template <char ...Chars> class FormatContents<sym, Chars...> :public Formatter<Chars...>\
+#define FORMAT_TERMINATOR1(a, b, type)   \
+template <char ...Chars> class FormatSpecifier<a, b, Chars...> :public Formatter<Chars...>\
 {\
 public:\
-    static string formatted(const string &format, type1 value){ return _format<type1>(format + sym, value);   }\
-    static string formatted(const string &format, type2 value){ return _format<type2>(format + sym, value);   }\
+    string formatted(const string &format, type value){ return _format<type>(format + string({a,b}), value);   }\
 };
 
-TERMINAL_FORMATTER2('f', double, float);
-TERMINAL_FORMATTER('d', int);
-TERMINAL_FORMATTER('p', void *);
-
-template <char ...Chars> class FormatContents<'s', Chars...> :public Formatter<Chars...>
-{
-public:
-    static string formatted(const string &format, const string &value)
-    {
-        char buf[256]; 
-        _snprintf(buf, sizeof(buf), (format + 's').c_str(), static_cast<string>(value).c_str());
-        return buf;
-    }
+#define FORMAT_TERMINATOR2(a, b, c, type)   \
+template <char ...Chars> class FormatSpecifier<a, b, c, Chars...> :public Formatter<Chars...>\
+{\
+public:\
+    string formatted(const string &format, type value){ return _format<type>(format + string({a,b,c}), value);   }\
 };
+
+FORMAT_TERMINATOR('f', double);
+FORMAT_TERMINATOR('e', double);
+FORMAT_TERMINATOR('g', double);
+
+FORMAT_TERMINATOR1('L', 'f', long double);
+FORMAT_TERMINATOR1('L', 'e', long double);
+FORMAT_TERMINATOR1('L', 'g', long double);
+
+FORMAT_TERMINATOR('p', void *);
+
+FORMAT_TERMINATOR('c', int);
+FORMAT_TERMINATOR1('l', 'c', wint_t);
+
+FORMAT_TERMINATOR('d', int);
+FORMAT_TERMINATOR('i', int);
+
+FORMAT_TERMINATOR('o', unsigned int);
+FORMAT_TERMINATOR('x', unsigned int);
+FORMAT_TERMINATOR('X', unsigned int);
+FORMAT_TERMINATOR('u', unsigned int);
+
+FORMAT_TERMINATOR1('h', 'd', short);
+FORMAT_TERMINATOR1('h', 'i', short);
+
+FORMAT_TERMINATOR1('h', 'o', unsigned short);
+FORMAT_TERMINATOR1('h', 'x', unsigned short);
+FORMAT_TERMINATOR1('h', 'X', unsigned short);
+FORMAT_TERMINATOR1('h', 'u', unsigned short);
+
+FORMAT_TERMINATOR2('l', 'l', 'd', long long);
+FORMAT_TERMINATOR2('l', 'l', 'i', long long);
+
+FORMAT_TERMINATOR2('l', 'l', 'o', unsigned long long);
+FORMAT_TERMINATOR2('l', 'l', 'x', unsigned long long);
+FORMAT_TERMINATOR2('l', 'l', 'X', unsigned long long);
+FORMAT_TERMINATOR2('l', 'l', 'u', unsigned long long);
 
 #define LETTER(str,pos) (pos < sizeof(str) ? str[pos] : 0)
 
 #define PARSE(str)  \
-	LETTER(str,0),LETTER(str,1),LETTER(str,2),LETTER(str,3),LETTER(str,4),\
-	LETTER(str,5),LETTER(str,6),LETTER(str,7),LETTER(str,8),LETTER(str,9),\
-	LETTER(str,10),LETTER(str,11),LETTER(str,12),LETTER(str,13),LETTER(str,14),\
-	LETTER(str,15),LETTER(str,16),LETTER(str,17),LETTER(str,18),LETTER(str,19),\
-	LETTER(str,20),LETTER(str,21),LETTER(str,22),LETTER(str,23),LETTER(str,24),\
-	LETTER(str,25),LETTER(str,26),LETTER(str,27),LETTER(str,28),LETTER(str,29)
+	LETTER(str, 00), LETTER(str, 01), LETTER(str, 02), LETTER(str, 03), LETTER(str, 04),\
+	LETTER(str, 05), LETTER(str, 06), LETTER(str, 07), LETTER(str,  8), LETTER(str,  9),\
+	LETTER(str, 10), LETTER(str, 11), LETTER(str, 12), LETTER(str, 13), LETTER(str, 14),\
+	LETTER(str, 15), LETTER(str, 16), LETTER(str, 17), LETTER(str, 18), LETTER(str, 19),\
+	LETTER(str, 20), LETTER(str, 21), LETTER(str, 22), LETTER(str, 23), LETTER(str, 24),\
+	LETTER(str, 25), LETTER(str, 26), LETTER(str, 27), LETTER(str, 28), LETTER(str, 29),\
+    LETTER(str, 30), LETTER(str, 31), LETTER(str, 32), LETTER(str, 33), LETTER(str, 34), \
+    LETTER(str, 35), LETTER(str, 36), LETTER(str, 37), LETTER(str, 38), LETTER(str, 39), \
+    LETTER(str, 40), LETTER(str, 41), LETTER(str, 42), LETTER(str, 43), LETTER(str, 44), \
+    LETTER(str, 45), LETTER(str, 46), LETTER(str, 47), LETTER(str, 48), LETTER(str, 49)
 
-#define custom_printf(format, ...)  _custom_printf(format, Formatter<PARSE(format)>(), __VA_ARGS__)
+#define static_printf(format, ...)  _static_printf<Formatter<PARSE(format)>>(format, __VA_ARGS__)
 
 template <class Formatter, class ...Args>
-void _custom_printf(const char *format, Formatter checker, const Args&... args)
+int _static_printf(const char *format, const Args&... args)
 {
-    string s = Formatter::text(args...);
+    Formatter f;
+    string s = f.text(args...);
     fputs(s.c_str(), stdout);
+    return s.length();
 }
 
 int main(int argc, char **argv)
 {
     string s = "govno";
-    int i = 13;
+    int i = 13, percent = 65;
+    long long number = 1LL << 56;
     double epsilon = 0.001;
+    long double huge = 1e308;
+    const wchar_t *text = L"WOA!";
 
-    custom_printf("%d %s %f\n", i, s, 3.14f);
-    custom_printf("pointer points to %p address\n", &i);
-    custom_printf("invalid epsilon value %.4f\n", epsilon);
-    custom_printf("custom message \"%s\"\n", "message");
-    custom_printf("%d %s %f", 1, 0, 2); // compilation error
+    static_printf("%d %s %f %ls\n", i, s, 3.14f, text);
+    static_printf("pointer points to %p address\n", &i);
+    static_printf("invalid epsilon value %.4f which is %d%%\n", epsilon, percent);
+    static_printf("custom message \"%s\" and some value %08X\n", "message", i);
+    static_printf("long number %016llx and %llo and a %Lg\n", number, number, huge);
+    //static_printf("%d %s %f", 1, 0, 2); // compilation error
+    //static_printf("%d", 56.7); // warning
     return 0;
 }
