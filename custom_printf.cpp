@@ -1,7 +1,17 @@
 #include <stdio.h>
 #include <string>
+#include <vector>
+#include <list>
 
 using namespace std;
+
+template <class T>
+string _format(const string &format, T value)
+{
+    char buf[256];
+    snprintf(buf, sizeof(buf), format.c_str(), value);
+    return buf;
+}
 
 template <char a, char ...Chars> class FormatSpecifier;
 
@@ -70,6 +80,23 @@ public:
     }
 };
 
+template <char ...Chars> class FormatSpecifier<'v', Chars...> : public FormatSpecifier<Chars...>
+{
+public:
+    template <class Container>
+    string formatted(const string &format, const Container &vec)
+    {
+        string s = "[";
+        for(auto &v : vec)
+        {
+            s.append(FormatSpecifier<Chars...>::formatted(format, v)).append(",");
+        }
+        s.erase(s.end() - 1);
+        s.append("]");
+        return s;
+    }
+};
+
 #define FORMAT_SPECIFIER(sym)    \
     template <char ...Chars>  class FormatSpecifier<sym, Chars...> :public FormatSpecifier<Chars...>   \
     {\
@@ -92,14 +119,6 @@ FORMAT_SPECIFIER('6');
 FORMAT_SPECIFIER('7');
 FORMAT_SPECIFIER('8');
 FORMAT_SPECIFIER('9');
-
-template <class T>
-string _format(const string &format, T value)
-{
-    char buf[256];
-    snprintf(buf, sizeof(buf), format.c_str(), value);
-    return buf;
-}
 
 #define FORMAT_TERMINATOR(sym, type)   \
 template <char ...Chars> class FormatSpecifier<sym, Chars...> :public Formatter<Chars...>\
@@ -168,9 +187,9 @@ FORMAT_TERMINATOR2('l', 'l', 'u', unsigned long long);
 	LETTER(str, 15), LETTER(str, 16), LETTER(str, 17), LETTER(str, 18), LETTER(str, 19),\
 	LETTER(str, 20), LETTER(str, 21), LETTER(str, 22), LETTER(str, 23), LETTER(str, 24),\
 	LETTER(str, 25), LETTER(str, 26), LETTER(str, 27), LETTER(str, 28), LETTER(str, 29),\
-    LETTER(str, 30), LETTER(str, 31), LETTER(str, 32), LETTER(str, 33), LETTER(str, 34), \
-    LETTER(str, 35), LETTER(str, 36), LETTER(str, 37), LETTER(str, 38), LETTER(str, 39), \
-    LETTER(str, 40), LETTER(str, 41), LETTER(str, 42), LETTER(str, 43), LETTER(str, 44), \
+    LETTER(str, 30), LETTER(str, 31), LETTER(str, 32), LETTER(str, 33), LETTER(str, 34),\
+    LETTER(str, 35), LETTER(str, 36), LETTER(str, 37), LETTER(str, 38), LETTER(str, 39),\
+    LETTER(str, 40), LETTER(str, 41), LETTER(str, 42), LETTER(str, 43), LETTER(str, 44),\
     LETTER(str, 45), LETTER(str, 46), LETTER(str, 47), LETTER(str, 48), LETTER(str, 49)
 
 #define static_printf(format, ...)  _static_printf<Formatter<PARSE(format)>>(format, __VA_ARGS__)
@@ -192,12 +211,17 @@ int main(int argc, char **argv)
     double epsilon = 0.001;
     long double huge = 1e308;
     const wchar_t *text = L"WOA!";
+    const char *another = "text text";
+    vector<float> vec{ 1,2,3 };
+    list<int> l{ 5,6,7,8,9,0 };
 
     static_printf("%d %s %f %ls\n", i, s, 3.14f, text);
     static_printf("pointer points to %p address\n", &i);
     static_printf("invalid epsilon value %.4f which is %d%%\n", epsilon, percent);
     static_printf("custom message \"%s\" and some value %08X\n", "message", i);
     static_printf("long number %016llx and %llo and a %Lg\n", number, number, huge);
+    static_printf("%s\n", another);
+    static_printf("vector %v.2f and list %v2i\n", vec, l);
     //static_printf("%d %s %f", 1, 0, 2); // compilation error
     //static_printf("%d", 56.7); // warning
     return 0;
