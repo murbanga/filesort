@@ -54,7 +54,9 @@ public:
     template <class T, class ...Types>
     string text(T val, Types ...vals)
     {
-        return FormatSpecifier<Chars...>::formatted("%", val) + FormatSpecifier<Chars...>::text(vals...);
+        string a = FormatSpecifier<Chars...>::formatted("%", val);
+        string b = FormatSpecifier<Chars...>::text(vals...);
+        return a + b;
     }
 };
 
@@ -200,7 +202,7 @@ int _static_printf(const char *format, const Args&... args)
     Formatter f;
     string s = f.text(args...);
     fputs(s.c_str(), stdout);
-    return s.length();
+    return (int)s.length();
 }
 
 int main(int argc, char **argv)
@@ -223,6 +225,6 @@ int main(int argc, char **argv)
     static_printf("%s\n", another);
     static_printf("vector %v.2f and list %v2i\n", vec, l);
     //static_printf("%d %s %f", 1, 0, 2); // compilation error
-    //static_printf("%d", 56.7); // warning
+    //static_printf("%d", 56.7e10); // warning
     return 0;
 }
